@@ -60,15 +60,21 @@ function renderCards(values, selectedDate) {
   resultsEl.innerHTML = DRAWS.map((draw, index) => {
     const value = values[index] || null;
     const drawTime = drawDateTime(selectedDate, draw.time);
-    const isPast = !isToday || now >= drawTime;
+    const selected = parseInputDate(selectedDate);
+    const todayDate = parseInputDate(localDateString());
+    const isFutureDay = selected > todayDate;
+    const isPastDay = selected < todayDate;
+    const isPast = now >= drawTime;
     const isNext = isToday && !value && now < drawTime;
 
     let badge = "";
     if (value) {
       badge = `<span class="badge">Resultado publicado</span>`;
+    } else if (isFutureDay) {
+      badge = `<span class="badge">Día no celebrado</span>`;
     } else if (isNext) {
-      badge = `<span class="badge">Próximo sorteo</span>`;
-    } else if (isPast) {
+      badge = `<span class="badge">Sorteo no celebrado</span>`;
+    } else if (isPastDay || isPast) {
       badge = `<span class="badge">Pendiente de publicación</span>`;
     } else {
       badge = `<span class="badge">Pendiente</span>`;
@@ -101,6 +107,23 @@ function showLoading() {
   `).join("");
 }
 
+function normalizeText(text) {
+  return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function extractPageDate(text) {
+  const normalized = normalizeText(text);
+  const months = MONTHS.join("|");
+  const regex = new RegExp(`(?:resultados[^.]{0,100})?(\\d{1,2})\\s+(?:de\\s+)?(${months})\\s+(?:de\\s+)?(\\d{4})`, "i");
+  const match = normalized.match(regex);
+  if (!match) return null;
+  const day = Number(match[1]);
+  const month = MONTHS.indexOf(match[2]);
+  const year = Number(match[3]);
+  if (month < 0) return null;
+  return `${year}-${pad(month + 1)}-${pad(day)}`;
+}
+
 function extractResults(text) {
   const values = [null, null, null, null, null];
 
@@ -131,11 +154,12 @@ async function fetchResults(dateValue) {
   // r.jina.ai convierte la página oficial en texto accesible desde una
   // web estática. No es una fuente de resultados propia: solo hace de
   // intermediario para poder leer JuegosONCE desde GitHub Pages.
-  const proxyUrl = `https://r.jina.ai/${officialUrl}`;
+  const proxyUrl = `https://r.jina.ai/${officialUrl}?_=${Date.now()}`;
 
   const response = await fetch(proxyUrl, {
     method: "GET",
-    cache: "no-store"
+    cache: "no-store",
+    headers: { "Cache-Control": "no-cache" }
   });
 
   if (!response.ok) {
@@ -143,12 +167,18 @@ async function fetchResults(dateValue) {
   }
 
   const text = await response.text();
-  const values = extractResults(text);
 
-  if (!values.some(Boolean)) {
-    throw new Error("La página se ha encontrado, pero todavía no contiene resultados.");
+  // JuegosONCE puede devolver el último día disponible cuando la fecha
+  // solicitada todavía no tiene resultados. Verificamos la fecha real.
+  const pageDate = extractPageDate(text);
+  if (pageDate && pageDate !== dateValue) {
+    throw new Error(`Todavía no hay una página de resultados para el ${formatDate(dateValue)}.`);
+  }
+  if (!pageDate) {
+    throw new Error("No se ha podido verificar la fecha de la página de resultados.");
   }
 
+  const values = extractResults(text);
   return { values, officialUrl };
 }
 
@@ -173,9 +203,15 @@ async function loadResults() {
     renderCards([], selectedDate);
 
     const isToday = selectedDate === localDateString();
-    statusEl.textContent = isToday
-      ? "Todavía no hay resultados disponibles o la fuente no responde. Pulsa «Actualizar» para volver a intentarlo."
-      : "No se han podido cargar los resultados de esa fecha.";
+    const selected = parseInputDate(selectedDate);
+    const today = parseInputDate(localDateString());
+    if (selected > today) {
+      statusEl.textContent = "Ese día todavía no ha llegado.";
+    } else if (isToday) {
+      statusEl.textContent = "Todavía no hay resultados disponibles o la fuente no responde. Pulsa «Actualizar» para volver a intentarlo.";
+    } else {
+      statusEl.textContent = "No se han podido cargar los resultados de esa fecha.";
+    }
 
     resultsEl.insertAdjacentHTML("beforebegin", `
       <div class="error" id="errorBox">
